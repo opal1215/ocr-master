@@ -1,7 +1,6 @@
 /**
  * Home Page - AI Document Parser
- * English version for international users
- * Features: Google Analytics tracking, Multiple download formats, SEO optimized
+ * 修复版：正确支持PDF + Google登录配置指南
  */
 
 'use client'
@@ -11,7 +10,8 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase'
 import { 
   Upload, Copy, CheckCircle, XCircle, Loader2, Sparkles, 
-  FileText, Calculator, Table, Languages, Zap, Download, FileDown 
+  FileText, Calculator, Table, Languages, Zap, Download, FileDown,
+  AlertCircle
 } from 'lucide-react'
 
 type ProcessingStatus = 'idle' | 'uploading' | 'processing' | 'success' | 'error'
@@ -40,7 +40,6 @@ export default function HomePage() {
 
   useEffect(() => {
     checkUser()
-    // 追踪页面访问
     trackEvent('page_view', {
       page_title: 'Home',
       page_location: window.location.href,
@@ -67,20 +66,33 @@ export default function HomePage() {
   const handleGoogleLogin = async () => {
     trackEvent('login_attempt', { method: 'google' })
     
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
-      },
-    })
-    
-    if (error) {
-      setError('Login failed, please try again')
-      trackEvent('login_error', { error: error.message })
+    try {
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: `${window.location.origin}/auth/callback`,
+        },
+      })
+      
+      if (error) {
+        console.error('Login error:', error)
+        setError(`Login failed: ${error.message}. Please check Supabase Google OAuth configuration.`)
+        trackEvent('login_error', { error: error.message })
+      }
+    } catch (err: any) {
+      console.error('Login exception:', err)
+      setError('Login failed. Please ensure Google OAuth is configured in Supabase.')
+      trackEvent('login_error', { error: err.message })
     }
   }
 
   const handleFileSelect = (file: File) => {
+    console.log('Selected file:', {
+      name: file.name,
+      type: file.type,
+      size: file.size,
+    })
+
     // Check file size (max 5MB)
     if (file.size > 5 * 1024 * 1024) {
       setError('File size must be under 5MB')
@@ -88,17 +100,32 @@ export default function HomePage() {
       return
     }
 
-    // Check file type
-    const supportedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/bmp', 'application/pdf']
+    // 支持的文件类型 - 重要：PDF的MIME类型是 application/pdf
+    const supportedTypes = [
+      'image/jpeg',
+      'image/jpg', 
+      'image/png',
+      'image/bmp',
+      'application/pdf'  // PDF支持
+    ]
+    
     if (!supportedTypes.includes(file.type)) {
-      setError('Please upload an image file (JPG, PNG, BMP) or PDF')
+      console.error('Unsupported file type:', file.type)
+      setError(`Unsupported file format. Please upload JPG, PNG, BMP, or PDF. (Your file type: ${file.type})`)
       trackEvent('file_error', { reason: 'invalid_type', type: file.type })
       return
     }
 
     setSelectedFile(file)
-    const url = URL.createObjectURL(file)
-    setPreviewUrl(url)
+    
+    // 如果是图片，显示预览
+    if (file.type.startsWith('image/')) {
+      const url = URL.createObjectURL(file)
+      setPreviewUrl(url)
+    } else {
+      setPreviewUrl('') // PDF不预览
+    }
+    
     setError('')
     
     trackEvent('file_selected', { 
@@ -108,7 +135,10 @@ export default function HomePage() {
   }
 
   const handleOCR = async () => {
-    if (!selectedFile) return
+    if (!selectedFile) {
+      setError('Please select a file first')
+      return
+    }
 
     if (credits <= 0) {
       setError('Insufficient credits. Please purchase more.')
@@ -130,6 +160,8 @@ export default function HomePage() {
         formData.append('userId', user.id)
       }
 
+      console.log('Uploading file:', selectedFile.name, selectedFile.type)
+
       setStatus('processing')
       const startTime = Date.now()
       
@@ -139,6 +171,7 @@ export default function HomePage() {
       })
 
       const data = await response.json()
+      console.log('OCR Response:', data)
 
       if (!response.ok) {
         throw new Error(data.error || 'Recognition failed')
@@ -160,6 +193,7 @@ export default function HomePage() {
       })
 
     } catch (err: any) {
+      console.error('OCR Error:', err)
       setStatus('error')
       setError(err.message || 'Recognition failed, please try again')
       
@@ -340,21 +374,26 @@ export default function HomePage() {
                 Click to upload or drag and drop
               </h3>
               <p className="text-sm text-gray-500 mb-4">
-                Supports: JPG, PNG, JPEG, BMP, PDF (Max 5MB)
+                <span className="font-medium text-blue-600">Supports: JPG, PNG, JPEG, BMP, PDF</span>
+                <br />
+                Max file size: 5MB
               </p>
               {selectedFile && (
                 <div className="mt-4 p-4 bg-blue-50 rounded-lg inline-block">
                   <p className="text-sm font-medium text-blue-900">
-                    {selectedFile.name}
+                    ✅ {selectedFile.name}
                   </p>
                   <p className="text-xs text-blue-600 mt-1">
-                    {(selectedFile.size / 1024).toFixed(2)} KB
+                    Type: {selectedFile.type} • Size: {(selectedFile.size / 1024).toFixed(2)} KB
                   </p>
                 </div>
               )}
               {error && (
-                <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg inline-block">
-                  <p className="text-sm text-red-600">{error}</p>
+                <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg inline-block max-w-2xl">
+                  <div className="flex items-start space-x-2">
+                    <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+                    <p className="text-sm text-red-600 text-left">{error}</p>
+                  </div>
                 </div>
               )}
               <input

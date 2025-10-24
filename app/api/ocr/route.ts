@@ -1,12 +1,12 @@
 /**
  * OCR API路由 - 使用模力方舟 PaddleOCR-VL（文档解析API）
  * 
- * 【v4.0终极版】使用正确的文档解析端点
+ * 【v5.0 - 最小修改版】在原代码基础上：
+ * 1. 支持PDF格式
+ * 2. 错误信息英文化
+ * 3. 添加更多调试日志
  * 
- * 重要发现：
- * - PaddleOCR-VL在"文档解析"API下，不在"图像OCR"API下
- * - 端点：/v1/async/documents/parse（不是/v1/async/images/ocr）
- * - 每天免费100页
+ * 重要：保持原有的异步API调用方式！
  * 
  * API文档：https://ai.gitee.com/docs
  * 端点：POST /v1/async/documents/parse
@@ -37,7 +37,7 @@ async function pollTaskResult(
   const statusUrl = `https://ai.gitee.com/v1/task/${taskId}`
   
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    console.log(`📡 轮询任务状态 (${attempt + 1}/${maxAttempts})...`)
+    console.log(`📡 Polling task status (${attempt + 1}/${maxAttempts})...`)
     
     const response = await fetch(statusUrl, {
       method: 'GET',
@@ -48,20 +48,20 @@ async function pollTaskResult(
     })
 
     if (!response.ok) {
-      throw new Error(`查询任务失败: HTTP ${response.status}`)
+      throw new Error(`Query failed: HTTP ${response.status}`)
     }
 
     const result = await response.json()
     const status = result.status || 'unknown'
     
-    console.log(`状态: ${status}`)
+    console.log(`Status: ${status}`)
     
     // 检查任务状态
     if (status === 'success') {
-      console.log('✅ 任务完成！')
+      console.log('✅ Task completed!')
       return result
     } else if (status === 'failed' || status === 'cancelled') {
-      throw new Error(result.error?.message || result.message || '任务失败')
+      throw new Error(result.error?.message || result.message || 'Task failed')
     } else {
       // 任务还在处理中，等待后继续
       await new Promise(resolve => setTimeout(resolve, intervalMs))
@@ -69,12 +69,12 @@ async function pollTaskResult(
     }
   }
   
-  throw new Error('任务超时，请稍后重试')
+  throw new Error('Task timeout, please try again later')
 }
 
 /**
  * POST /api/ocr
- * 处理图片文字识别请求
+ * 处理图片和PDF文字识别请求
  */
 export async function POST(request: NextRequest) {
   try {
@@ -86,22 +86,46 @@ export async function POST(request: NextRequest) {
 
     if (!imageFile) {
       return NextResponse.json(
-        { error: '请上传图片文件' },
+        { error: 'Please upload a file' },
         { status: 400 }
       )
     }
 
-    if (!imageFile.type.startsWith('image/')) {
+    // 🔥 修改1：支持PDF和图片格式
+    console.log('📁 File received:', {
+      name: imageFile.name,
+      type: imageFile.type,
+      size: imageFile.size
+    })
+
+    const supportedTypes = [
+      'image/jpeg',
+      'image/jpg',
+      'image/png',
+      'image/bmp',
+      'image/gif',
+      'application/pdf'  // ✅ 支持PDF
+    ]
+
+    if (!supportedTypes.includes(imageFile.type)) {
+      console.error('❌ Unsupported file type:', imageFile.type)
       return NextResponse.json(
-        { error: '只支持图片格式（JPG、PNG、GIF等）' },
+        { 
+          error: `Unsupported file format: ${imageFile.type}. Please upload JPG, PNG, BMP, GIF, or PDF.`,
+          fileType: imageFile.type
+        },
         { status: 400 }
       )
     }
 
-    const maxSize = 5 * 1024 * 1024
+    // 🔥 修改2：PDF允许更大的文件（10MB）
+    const maxSize = imageFile.type === 'application/pdf' 
+      ? 10 * 1024 * 1024  // PDF: 10MB
+      : 5 * 1024 * 1024   // 图片: 5MB
+
     if (imageFile.size > maxSize) {
       return NextResponse.json(
-        { error: '图片大小不能超过5MB' },
+        { error: `File size exceeds ${maxSize / 1024 / 1024}MB limit` },
         { status: 400 }
       )
     }
@@ -119,9 +143,9 @@ export async function POST(request: NextRequest) {
         .single()
 
       if (userError) {
-        console.error('查询用户积分失败:', userError)
+        console.error('❌ Failed to query user credits:', userError)
         return NextResponse.json(
-          { error: '用户信息错误' },
+          { error: 'User information error' },
           { status: 400 }
         )
       }
@@ -132,7 +156,7 @@ export async function POST(request: NextRequest) {
 
       if (userCredits <= 0) {
         return NextResponse.json(
-          { error: '积分不足，请购买更多积分' },
+          { error: 'Insufficient credits. Please purchase more.' },
           { status: 403 }
         )
       }
@@ -144,19 +168,19 @@ export async function POST(request: NextRequest) {
     const apiToken = process.env.GITEE_AI_API_TOKEN
 
     if (!apiToken) {
-      console.error('❌ 模力方舟API令牌配置缺失！')
-      console.error('请在.env.local文件中添加：')
-      console.error('GITEE_AI_API_TOKEN=你的访问令牌')
+      console.error('❌ Gitee AI API token not configured!')
+      console.error('Please add to .env.local:')
+      console.error('GITEE_AI_API_TOKEN=your_token')
       
       return NextResponse.json(
-        { error: '系统配置错误，请联系管理员' },
+        { error: 'System configuration error. Please contact administrator.' },
         { status: 500 }
       )
     }
 
     try {
       // 步骤3.1：提交文档解析任务
-      console.log('🚀 正在提交文档解析任务...')
+      console.log('🚀 Submitting document parse task...')
       
       // 使用正确的文档解析API端点
       const submitUrl = 'https://ai.gitee.com/v1/async/documents/parse'
@@ -180,80 +204,80 @@ export async function POST(request: NextRequest) {
 
       if (!submitResponse.ok) {
         const errorText = await submitResponse.text()
-        console.error('❌ 提交任务失败:', errorText)
-        throw new Error(`提交任务失败: HTTP ${submitResponse.status}`)
+        console.error('❌ Task submission failed:', errorText)
+        throw new Error(`Task submission failed: HTTP ${submitResponse.status}`)
       }
 
       const submitData = await submitResponse.json()
-      console.log('📋 任务提交成功:', submitData)
+      console.log('📋 Task submitted successfully:', submitData)
 
       // 步骤3.2：获取任务ID
       const taskId = submitData.task_id
       
       if (!taskId) {
-        console.error('❌ 响应格式错误:', submitData)
-        throw new Error('未获取到任务ID')
+        console.error('❌ Invalid response format:', submitData)
+        throw new Error('Task ID not received')
       }
 
-      console.log(`🎯 任务ID: ${taskId}`)
+      console.log(`🎯 Task ID: ${taskId}`)
 
       // 步骤3.3：轮询等待任务完成
-      console.log('⏳ 等待识别完成...')
+      console.log('⏳ Waiting for recognition to complete...')
       const result = await pollTaskResult(taskId, apiToken, 30, 1000)
 
       const processingTime = Date.now() - startTime
-      console.log(`⏱️  总处理耗时: ${processingTime}ms`)
+      console.log(`⏱️  Total processing time: ${processingTime}ms`)
 
       // 步骤3.4：提取识别的文字
       let extractedText = ''
       
       // 尝试多种可能的字段（模力方舟返回格式可能不同）
-      console.log('🔍 开始提取文字...')
+      console.log('🔍 Extracting text...')
       
       // 方式1：text_result字段（最常见）
       if (result.output?.text_result) {
-        console.log('✅ 找到text_result字段')
+        console.log('✅ Found text_result field')
         extractedText = result.output.text_result
       }
       // 方式2：segments字段（数组格式）
       else if (result.output?.segments && Array.isArray(result.output.segments)) {
-        console.log('✅ 找到segments字段')
+        console.log('✅ Found segments field')
         extractedText = result.output.segments
           .map((seg: any) => seg.text || seg.content || '')
           .join('\n')
       }
       // 方式3：file_url字段（需要下载）
       else if (result.output?.file_url) {
-        console.log('📥 下载结果文件:', result.output.file_url)
+        console.log('📥 Downloading result file:', result.output.file_url)
         const fileResponse = await fetch(result.output.file_url)
         extractedText = await fileResponse.text()
       }
       // 方式4：直接text字段
       else if (result.output?.text) {
-        console.log('✅ 找到text字段')
+        console.log('✅ Found text field')
         extractedText = result.output.text
       }
       // 方式5：content字段
       else if (result.output?.content) {
-        console.log('✅ 找到content字段')
+        console.log('✅ Found content field')
         extractedText = result.output.content
       }
       // 方式6：result.text字段
       else if (result.result?.text) {
-        console.log('✅ 找到result.text字段')
+        console.log('✅ Found result.text field')
         extractedText = result.result.text
       }
       // 方式7：直接text字段
       else if (result.text) {
-        console.log('✅ 找到顶层text字段')
+        console.log('✅ Found top-level text field')
         extractedText = result.text
       }
       
-      console.log(`📏 提取的文字长度: ${extractedText.length}`)
+      console.log(`📏 Extracted text length: ${extractedText.length}`)
 
       // 如果没有识别到文字
       if (!extractedText || extractedText.trim().length === 0) {
-        console.error('❌ 未识别到文字，API响应:', result)
+        console.error('❌ No text recognized. API response:', result)
         
         if (userId) {
           await supabase.from('ocr_results').insert({
@@ -265,12 +289,12 @@ export async function POST(request: NextRequest) {
         }
 
         return NextResponse.json(
-          { error: '未能识别到文字，请确保图片清晰且包含文字内容' },
+          { error: 'No text recognized. Please ensure the image is clear and contains text.' },
           { status: 400 }
         )
       }
 
-      console.log(`✅ 识别成功，文字长度: ${extractedText.length}`)
+      console.log(`✅ Recognition successful. Text length: ${extractedText.length}`)
 
       // ====== 第四步：扣除积分并记录日志 ======
       
@@ -281,9 +305,9 @@ export async function POST(request: NextRequest) {
           .eq('id', userId)
 
         if (updateError) {
-          console.error('⚠️  扣除积分失败:', updateError)
+          console.error('⚠️  Failed to deduct credits:', updateError)
         } else {
-          console.log(`💎 积分扣除成功，剩余: ${userCredits - 1}`)
+          console.log(`💎 Credits deducted. Remaining: ${userCredits - 1}`)
         }
 
         await supabase.from('ocr_results').insert({
@@ -307,10 +331,11 @@ export async function POST(request: NextRequest) {
         fileSize: imageFile.size,
         model: 'PaddleOCR-VL',
         apiType: 'DocumentParse',
+        fileType: imageFile.type,
       })
 
     } catch (error: any) {
-      console.error('❌ 模力方舟OCR处理错误:', error)
+      console.error('❌ Gitee AI OCR processing error:', error)
       
       if (userId) {
         await supabase.from('ocr_results').insert({
@@ -321,7 +346,7 @@ export async function POST(request: NextRequest) {
         })
       }
 
-      let errorMessage = '识别服务暂时不可用，请稍后重试'
+      let errorMessage = 'Recognition service temporarily unavailable. Please try again later.'
       if (error.message) {
         errorMessage = error.message
       }
@@ -333,9 +358,9 @@ export async function POST(request: NextRequest) {
     }
 
   } catch (error: any) {
-    console.error('❌ OCR处理错误:', error)
+    console.error('❌ OCR processing error:', error)
     return NextResponse.json(
-      { error: error.message || '服务器错误，请重试' },
+      { error: error.message || 'Server error. Please try again.' },
       { status: 500 }
     )
   }
@@ -350,14 +375,15 @@ export async function GET() {
   
   return NextResponse.json({
     service: 'AI Document Parser API',
-    version: '4.0.0',
+    version: '5.0.0',
     status: 'operational',
     ocrProvider: 'Gitee AI (PaddleOCR-VL)',
     model: 'PaddleOCR-VL',
     configured: hasConfig,
-    apiType: 'DocumentParse',
+    apiType: 'DocumentParse (Async)',
     apiEndpoint: '/v1/async/documents/parse',
     pricing: 'Free 100 pages/day',
+    supportedFormats: ['JPG', 'PNG', 'BMP', 'GIF', 'PDF'],
     features: [
       'PaddleOCR-VL model',
       '92.56 accuracy score',
@@ -365,6 +391,7 @@ export async function GET() {
       'Table recognition',
       'Formula recognition',
       'Handwriting recognition',
+      'PDF support',
       'Free 100 pages daily',
     ],
   })

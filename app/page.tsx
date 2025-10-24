@@ -156,10 +156,6 @@ export default function HomePage() {
     try {
       const formData = new FormData()
       formData.append('image', selectedFile)
-      if (user) {
-        formData.append('userId', user.id)
-      }
-
       console.log('Uploading file:', selectedFile.name, selectedFile.type)
 
       setStatus('processing')
@@ -174,7 +170,18 @@ export default function HomePage() {
       console.log('OCR Response:', data)
 
       if (!response.ok) {
-        throw new Error(data.error || 'Recognition failed')
+        let errorMessage = data.error || 'Recognition failed'
+
+        if (response.status === 401) {
+          errorMessage = 'Please sign in to use OCR.'
+          setUser(null)
+        } else if (response.status === 429) {
+          errorMessage = 'Too many requests. Please try again in a moment.'
+        } else if (response.status === 403) {
+          errorMessage = data.error || 'Insufficient credits. Please purchase more.'
+        }
+
+        throw new Error(errorMessage)
       }
 
       const processingTime = Date.now() - startTime

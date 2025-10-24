@@ -36,21 +36,49 @@ export async function GET(request: Request) {
 
       // 登录成功，创建用户记录（如果不存在）
       if (data.user) {
-        const { error: dbError } = await supabase
-          .from('users')
-          .upsert({
-            id: data.user.id,
-            email: data.user.email,
-            credits: 3, // 新用户默认3个credits
-            created_at: new Date().toISOString(),
-          }, {
-            onConflict: 'email',
-            ignoreDuplicates: false,
-          })
+        const nowIso = new Date().toISOString()
 
-        if (dbError) {
-          console.error('Database error:', dbError)
-          // 即使数据库写入失败，也让用户登录成功
+        const { data: existingUsers, error: fetchError } = await supabase
+          .from('users')
+          .select('id, email')
+          .eq('id', data.user.id)
+
+        if (fetchError) {
+          console.error('Failed to query existing user record:', fetchError)
+        }
+
+        const existingUser = existingUsers?.[0]
+
+        if (!existingUser) {
+          const { error: insertError } = await supabase
+            .from('users')
+            .insert({
+              id: data.user.id,
+              email: data.user.email,
+              credits: 3, // 新用户默认赠送的积分
+              created_at: nowIso,
+              updated_at: nowIso,
+            })
+
+          if (insertError) {
+            if (insertError.code === '23505') {
+              console.error(
+                'User email already exists with a different id. Please resolve manually in the database.',
+                insertError
+              )
+            } else {
+              console.error('Failed to insert user record:', insertError)
+            }
+          }
+        } else if (existingUser.email !== data.user.email) {
+          const { error: updateError } = await supabase
+            .from('users')
+            .update({ email: data.user.email, updated_at: nowIso })
+            .eq('id', data.user.id)
+
+          if (updateError) {
+            console.error('Failed to refresh stored email for user:', updateError)
+          }
         }
 
         console.log('User logged in successfully:', data.user.email)
